@@ -6,5 +6,5 @@ The best performing model was the logistic model built through stepwise regressi
 
 Key highlights:
 -	Utilised ‘spicyR’ to investigate the spatial interaction between cells in breast cancer single cell tissue images 
--	Used statistical analysis to determine which 35,000 genes were differentially expressed genes in patients
+-	Used statistical analysis to determine which 35,000 genes were differentially expressed genes in patients that survived and those that didn't
 -	Developed a model that predicted the survival of a particular subtype (Luminal A) of breast cancer patients with 90% accuracy and 0.53 kappa
