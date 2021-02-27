@@ -1,0 +1,138 @@
+---
+title: "Forecasting Survival Status in Breast Cancer Patients"
+author: "Sourish Iyengar,                                                               Supervisor: Dr. Ellis Patrick"
+output:
+  xaringan::moon_reader:
+    css: ["default", "assets/sydney-fonts.css", "assets/sydney.css"]
+    self_contained: false # if true, fonts will be stored locally
+    seal: true # show a title slide with YAML information
+    includes:
+      in_header: "assets/mathjax-equation-numbers.html"
+    nature:
+      beforeInit: ["assets/remark-zoom.js", "https://platform.twitter.com/widgets.js"]
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+      ratio: '4:3' # alternatives '16:9' or '4:3' or others e.g. 13:9
+      navigation:
+        scroll: false # disable slide transitions by scrolling
+---
+background-image: url(""), url("Images_Figures/Breast Cancer Statistics 2020 pt1.jpg")
+background-position: 10% 90%, 100% 70%
+background-size: 500px, 100% 100%
+background-color: #0148A4
+
+## Introduction
+
+```{r setup, include=FALSE}
+options(htmltools.dir.version = FALSE, htmltools.preserve.raw = FALSE)
+```
+
+```{r, include=FALSE}
+# devtools::install_github('yihui/xaringan')
+# devtools::install_github("ropenscilabs/icon")
+# install.packages("RefManageR")
+# install.packages("DT")
+```
+
+---
+background-image: url(""),url("Images_Figures/DataTypes.png")
+background-position: 10% 90%, 100% 70%
+background-size: 500px, 100% 100%
+background-color: #0148A4
+
+## Technology and Datatypes
+
+---
+## Comparative Performance
+
+```{r, message = FALSE, warning=FALSE, echo = FALSE}
+library(gt)
+library(webshot)
+library(plotly)
+library(tidyverse)
+library(gtsummary)
+load("saved_rdata/overall_summary.Rdata")
+load("saved_rdata/overall_summary_boxplot.Rdata")
+
+htmlwidgets::saveWidget(as_widget(overall_summary_boxplot), "overall_summary_boxplot.html")
+gt::gtsave(overall_summary[[1]]%>% fmt_number(columns = c("Score"),decimals = 2), filename = "overall_table.html")
+```
+<iframe src = "overall_table.html" width = "810" height = "500" frameborder="0"></iframe>                          
+---
+## Clinical Model Performance 
+.small[A kappa value < 0 indicates no agreement , 0–0.20 as slight, 0.21–0.40 as fair, 0.41–0.60 as moderate, 0.61–0.80 as substantial, and 0.81–1 as almost perfect agreement.]
+
+<iframe src = "overall_summary_boxplot.html" width = "90%" height = "400" frameborder="0"></iframe>   
+---
+ 
+## Delving Deeper into the Clinical Model 
+
+```{r, echo=FALSE, message = FALSE, results = "asis"}
+load("saved_rdata/cl.bw.lm.vis.Rdata")
+
+clinical_overall_p = (plot(cl.bw.lm.vis, which = "vip", interactive = FALSE) + ggtitle("Variable Inclusion Plot")) %>% ggplotly()
+htmlwidgets::saveWidget(as_widget(clinical_overall_p), "clinical_overall_ms.html")
+
+```
+.center[
+<iframe src = "clinical_overall_ms.html" width="95%" height="500" id="igraph" scrolling="no" seamless="seamless" frameBorder="0"></iframe>
+]
+
+---
+## Clinical Model Performance Stratified by Subtypes
+```{r, message = FALSE, warning=FALSE, echo = FALSE}
+load("saved_rdata/cl_st_table.Rdata")
+gt::gtsave(cl_st_table %>% fmt_number(columns = c("Step Log",	"Full Log",	"Rf",	"Knn",	"Xgb")), filename = "cl_st_table.html")
+```
+<iframe src = "cl_st_table.html" width = "810" height = "500" frameborder="0"></iframe>
+
+
+---
+## Well Performing Subtype Models
+```{r, echo=FALSE, message = FALSE, out.height="100%", results = "asis"}
+load("saved_rdata/luma.bw.lm.vis.Rdata")
+load("saved_rdata/her2.bw.lm.vis.Rdata")
+load("saved_rdata/normal.bw.lm.vis.Rdata")
+
+k = list(text = "", xref = "paper", yref = "paper", yanchor = "bottom", xanchor = "center", align = "center", x = 0.5, y = 1,showarrow = FALSE )
+
+
+a = (plot(luma.bw.lm.vis, which = "vip", interactive = FALSE)+ theme(legend.position = "none")) %>% ggplotly() %>% layout(annotations = list_modify(k, text = "Luminal A"))
+
+b = (plot(her2.bw.lm.vis, which = "vip", interactive = FALSE)+ theme(legend.position = "none")) %>% ggplotly() %>% layout(annotations = list_modify(k, text = "HER2"))
+
+c = (plot(normal.bw.lm.vis, which = "vip", interactive = FALSE)+ theme(legend.position = "none")) %>% ggplotly() %>% layout(annotations = list_modify(k, text = "Normal"))
+
+
+good_metric_subtypes = subplot(a,b,c, shareY = TRUE, shareX = TRUE)
+htmlwidgets::saveWidget(as_widget(good_metric_subtypes), "subtypes_ms1.html")
+
+```
+
+ <iframe class="frame" width="1500" height="420" scrolling="yes" frameborder="0" src="subtypes_ms1.html"></iframe>
+ 
+---
+
+## Weak Performing Subtype Models
+
+```{r, echo=FALSE, message = FALSE, out.height="100%", results = "asis"}
+load("saved_rdata/lumb.bw.lm.vis.Rdata")
+load("saved_rdata/basal.bw.lm.vis.Rdata")
+
+
+a = (plot(lumb.bw.lm.vis, which = "vip", interactive = FALSE)+ theme(legend.position = "none")) %>% ggplotly() %>% layout(annotations = list_modify(k, text = "Luminal B"))
+
+b = (plot(basal.bw.lm.vis, which = "vip", interactive = FALSE)+ theme(legend.position = "none")) %>% ggplotly() %>% layout(annotations = list_modify(k, text = "Basal"))
+
+bad_metric_subtypes = subplot(a,b, shareY = TRUE, shareX = TRUE)
+htmlwidgets::saveWidget(as_widget(bad_metric_subtypes), "subtypes_ms2.html")
+```
+ <iframe class="frame" width="1500" height="420" scrolling="yes" frameborder="0" src="subtypes_ms2.html"></iframe>
+ 
+---
+
+## Conclusion
+ 
+ * Models built on the clinical dataset had the most predictive power in terms of accuracy, balanced accuracy and kappa.
+ * Luminal A, HER2 and Normal subtype breast cancer patients were a subset of the dataset that were easier to predict relative to Luminal B and Basal patients.
