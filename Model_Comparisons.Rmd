@@ -1,0 +1,1404 @@
+---
+title: "Forecasting Breast Cancer Survival and Model Comparison Analysis"
+author: "Sourish Iyengar"
+output: 
+  rmdformats::material:
+    code_folding: hide
+    fig_caption: yes
+    number_sections: no
+    self_contained: yes
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+The aim of this project was to build numerous classification models using single-cell image mass cytometry (IMC), gene expression, and clinical data to predict the survival status for breast cancer patients. With advancements in high-throughput technologies such as IMC, I wanted to investigate whether using datasets built on this new technology has more predictive power than using a more novel approach. Thus, a comprehensive analysis using cross-validation and model stability was conducted to determine the dataset with the most predictive power.
+
+
+# Libraries and Functions
+
+### Libraries
+```{r}
+library(tidyverse)
+library(janitor)
+library(limma)
+library(e1071)
+library(GEOquery)
+library(ggfortify)
+library(Biobase)
+library(plotly)
+library(rpart)
+library(xgboost)
+library(gt)
+library(mplot)
+library(spicyR)
+library(dplyr)
+```
+
+### Creating a function that performs K-fold cross validation (CV) whilst incoporating feature selection into this process.
+
+```{r}
+model_cv_feature = function(data, k=10, ncv = 5, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = FALSE, exv = NULL){
+
+  set.seed(seed)
+  
+  k = k
+  ncv = ncv
+  data$tag = cvTools::cvFolds(nrow(data), ncv)$which
+  
+  a_logistic= c()
+  a_logistic_full = c()
+  a_rf= c()
+  a_knn = c()
+  a_xgb= c()
+  
+  a_logistic1= c()
+  a_logistic_full1 = c()
+  a_rf1= c()
+  a_knn1 = c()
+  a_xgb1= c()
+  
+  a_steplog_kap= c()
+  a_log_kap = c()
+  a_rf_kap= c()
+  a_knn_kap = c()
+  a_xgb_kap= c()
+  
+  
+  a_steplog_kap1 = c()
+  a_log_kap1 = c()
+  a_rf_kap1= c()
+  a_knn_kap1 = c()
+  a_xgb_kap1= c()
+  
+  a_steplog_balanced = c()
+  a_log_balanced = c()
+  a_rf_balanced = c()
+  a_knn_balanced = c()
+  a_xgb_balanced= c()
+  
+  
+  a_steplog_balanced1 = c()
+  a_log_balanced1 = c()
+  a_rf_balanced1= c()
+  a_knn_balanced1 = c()
+  a_xgb_balanced1= c()
+
+  for (j in 1:k){
+    data = data %>% mutate(tag = sample(tag))
+   
+    if (j == 1){ 
+      if (categorical_exist == TRUE){
+        categorical_cols = data %>% select_if(negate(is.numeric)) %>% select(-sample_id) %>% colnames()
+        
+        original_non_categorical = setdiff(data %>% colnames(), categorical_cols) 
+        
+        nn = data %>% mlr::createDummyFeatures(cols =categorical_cols) %>% 
+          select(-original_non_categorical) %>% colnames() 
+        
+        data = data %>% mlr::createDummyFeatures(cols =categorical_cols)
+        
+        d2 = data
+        
+      }else{
+        nn = NULL
+        d2 = data 
+      }
+    }
+    
+    for (i in 1:ncv){
+      
+      if (fs == TRUE){
+        test = data %>% filter(tag == i)
+        rownames(test) = test$sample_id
+        train = data %>% filter(tag != i)
+        rownames(train) = train$sample_id
+    
+  
+        pheno = train %>% select(event)
+        express = train %>% select(-sample_id,-event, -tag,-exv) %>% t()
+        set = ExpressionSet(assayData = express, phenoData = AnnotatedDataFrame(pheno))
+    
+        design = model.matrix(~event, pheno)
+    
+    
+        fit = lmFit(set[, rownames(design)], design, method = "ls")
+        efit = eBayes(fit, trend = TRUE)
+    
+        dt_fdr <- decideTests(efit)
+        top10 <- topTable(efit, n = top) %>% rownames()
+    
+    
+        f_test =  test %>% select(top10, event, exv)
+        f_train =  train %>% select(top10, event,exv)
+        
+        d2 = data %>% select(top10, event, tag,exv)
+        
+      }else{
+        
+        f_test = data %>% filter(tag == i)%>% select(-tag, -sample_id)
+        f_train = data %>% filter(tag != i) %>% select(-tag, -sample_id)
+        
+        d2 = data %>% select(-sample_id)
+        
+      }
+      
+      if (w == FALSE){
+        w1 = NULL  
+      }else{
+        w1 = ifelse(f_train$event == 0,
+                         (1/table(f_train$event)[1]) * 0.5,
+                        (1/table(f_train$event)[2]) * 0.5)
+      }
+      
+      #logistic
+      logistic = glm(event~., data = f_train, family = binomial, weights =w1)
+      step_logistic = step(logistic, trace = FALSE)
+      preds = as.factor(round(predict(step_logistic,f_test, type = "response")))
+      truth = factor(f_test$event, levels=c(0,1))
+      
+      a_logistic[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[1]
+      a_steplog_kap[i] =  caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[2]
+      a_steplog_balanced[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$byClass[11]
+      
+
+      #full logistic
+      preds = as.factor(round(predict(logistic,f_test, type = "response")))
+      truth = factor(f_test$event, levels=c(0,1))
+      
+      a_logistic_full[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[1]
+      a_log_kap[i] =caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[2]
+      a_log_balanced[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$byClass[11]
+    
+  
+      # Random Forest
+      rf = rpart(factor(event) ~ ., data = f_train, weights = w1)
+      preds = as.factor(predict(rf,f_test, type = "class"))
+      truth = factor(f_test$event, levels=c(0,1))
+      
+      a_rf[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[1]
+      a_rf_kap[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[2]
+      a_rf_balanced[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$byClass[11]
+  
+
+      # KNN
+      train_scaled = d2 %>% as.data.frame() %>% mutate(y = factor(event), tag = factor(tag)) %>% mutate(across(where(is.numeric),.fns = scale))  %>% filter(tag != paste0(i)) %>%  select(-tag,-nn)
+  
+      test_scaled =  d2 %>% as.data.frame() %>%  mutate(y = factor(event), tag = factor(tag)) %>% mutate(across(where(is.numeric),.fns = scale)) %>% filter(tag == paste0(i)) %>%  select(-tag,-nn)
+  
+    
+      X_train = train_scaled %>% select(-event,-y) %>% select_if(is.numeric)
+      y_train = train_scaled %>% select(y) %>% pull()
+      n = length(y_train)
+  
+      X_test = test_scaled %>% select(-event,-y) %>% select_if(is.numeric)
+      y_test = test_scaled %>% select(y) %>% pull()
+      
+
+      preds = class::knn(train = X_train, test = X_test, cl = y_train, k = 5) 
+      truth = y_test %>% factor(levels=c(0,1))
+      tab <- table(preds,truth)
+      
+      a_knn[i] = sum(diag(tab)/(sum(rowSums(tab))))
+      a_knn_kap[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[2]
+      a_knn_balanced[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$byClass[11]
+  
+      # XGBOOST
+      xgb <- xgboost(data = data.matrix(f_train %>% select(-event)),
+       label = f_train %>% select(event) %>% as.matrix(),
+      max.depth = 2, eta = 1, nthread = 2, nrounds = 2,verbose = 0, weight =w1)
+  
+      preds = predict(xgb,data.matrix(f_test%>% select(-event)))
+      preds = as.numeric(preds > 0.5) %>% factor(levels=c(0,1))
+      truth = factor(f_test$event,levels=c(0,1))
+      tab <- table(preds,truth)
+      
+      a_xgb[i] = sum(diag(tab)/(sum(rowSums(tab))))
+      a_xgb_kap[i] =caret::confusionMatrix(data = preds, reference = truth, positive = "1")$overall[2]
+      a_xgb_balanced[i] = caret::confusionMatrix(data = preds, reference = truth, positive = "1")$byClass[11]
+
+    }
+    
+    a_logistic1[j] = mean(a_logistic, na.rm = TRUE)
+    a_logistic_full1[j] = mean(a_logistic_full,na.rm = TRUE)
+    a_rf1[j]= mean(a_rf, na.rm = TRUE)
+    a_knn1[j] = mean(a_knn, na.rm = TRUE)
+    a_xgb1[j]= mean(a_xgb, na.rm = TRUE)
+    
+    a_steplog_balanced1[j] = mean(a_steplog_balanced,na.rm = TRUE)
+    a_log_balanced1[j] = mean(a_log_balanced, na.rm = TRUE)
+    a_rf_balanced1[j]= mean(a_rf_balanced, na.rm = TRUE)
+    a_knn_balanced1[j] = mean(a_knn_balanced, na.rm = TRUE)
+    a_xgb_balanced1[j]= mean(a_xgb_balanced,na.rm = TRUE)
+    
+    a_steplog_kap1[j] = mean(a_steplog_kap, na.rm = TRUE)
+    a_log_kap1[j] = a_log_kap%>% mean(na.rm = TRUE)
+    a_rf_kap1[j]= a_rf_kap%>% mean(na.rm = TRUE)
+    a_knn_kap1[j] =a_knn_kap%>% mean(na.rm = TRUE)
+    a_xgb_kap1[j]=a_xgb_kap %>% mean(na.rm = TRUE)
+  
+  }
+  
+  means = cbind(step_log = a_logistic1 %>% mean(na.rm = TRUE),
+  full_log = a_logistic_full1 %>% mean(na.rm = TRUE),
+  rf = a_rf1 %>% mean(na.rm = TRUE),
+  knn = a_knn1 %>% mean(na.rm = TRUE),
+  xgb = a_xgb1 %>% mean(na.rm = TRUE)) %>% as.data.frame()
+  
+  kappas = cbind(step_log = a_steplog_kap1,
+  full_log = a_log_kap1 ,
+  rf = a_rf_kap1 ,
+  knn = a_knn_kap1 ,
+  xgb = a_xgb_kap1) %>% as.data.frame()
+
+  
+  accuracies = cbind(step_log = a_logistic1,
+  full_log = a_logistic_full1,
+  rf = a_rf1,
+  knn = a_knn1,
+  xgb = a_xgb1) %>% as.data.frame() 
+  
+  balanced_accuracies = cbind(step_log = a_steplog_balanced1,
+  full_log = a_log_balanced1,
+  rf = a_rf_balanced1,
+  knn = a_knn_balanced1,
+  xgb = a_xgb_balanced1) %>% as.data.frame()
+  
+return(list(means, accuracies, kappas, balanced_accuracies))
+}
+```
+
+### Creating functions that produce stylised gt tables to present the results from K-fold CV.
+```{r}
+
+gt_create <- function(data){
+
+data1= data[1] %>% as.data.frame() 
+colnames(data1) = gsub("_"," ",colnames(data1))%>%  str_to_title()
+
+data2 = data[3] %>% as.data.frame() %>% mutate_all(mean,na.rm = TRUE) %>% dplyr::slice(1)
+colnames(data2) = gsub("_"," ",colnames(data2))%>%  str_to_title()
+
+data3_ba =  data[4] %>% as.data.frame() %>% mutate_all(mean,na.rm = TRUE) %>% dplyr::slice(1) 
+colnames(data3_ba) = gsub("_"," ",colnames(data3_ba))%>%  str_to_title()
+
+best1 = data1 %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% t() %>% colnames() 
+worst1 = data1 %>% t() %>% as.data.frame() %>% filter(V1 == min(V1)) %>% t() %>% colnames() 
+
+best2 = data2 %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% t() %>% colnames() 
+worst2 = data2 %>% t() %>% as.data.frame() %>% filter(V1 == min(V1)) %>% t() %>% colnames() 
+
+best3_ba = data3_ba %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% t() %>% colnames() 
+worst3_ba = data3_ba %>% t() %>% as.data.frame() %>% filter(V1 == min(V1)) %>% t() %>% colnames()
+
+rbind(Accuracy = data1,Kappa =data2, Balanced_Accuracy = data3_ba) %>% mutate(rows = c("Accuracy","Kappa", "Balanced Accuracy")) %>%  gt::gt(rowname_col = "rows") %>%   
+  tab_style(
+    style = list(cell_text(weight = "bold"), cell_fill("lightcyan")),
+    locations = cells_column_labels(columns = vars("Step Log","Full Log","Rf","Knn","Xgb" ))
+)%>%  
+  tab_style(
+    style = list(
+      cell_fill(color = "green"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = best1[1], "Accuracy")
+  )%>%  
+  tab_style(
+    style = list(
+      cell_fill(color = "red"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = worst1[1], rows = "Accuracy")
+  )%>%  
+  tab_style(
+    style = list(
+      cell_fill(color = "green"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = best2[1], "Kappa")
+  )%>%  
+  tab_style(
+    style = list(
+      cell_fill(color = "red"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = worst2[1], rows = "Kappa")
+  )%>%  
+  tab_style(
+    style = list(
+      cell_fill(color = "green"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = best3_ba[1], "Balanced Accuracy")
+  )%>%  
+  tab_style(
+    style = list(
+      cell_fill(color = "red"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = worst3_ba[1], rows = "Balanced Accuracy")
+  )
+
+}
+```
+
+```{r}
+gt_create_multi <- function(data, names){
+  
+  datas = data.frame()
+  
+  best_a = c()
+  worst_a = c()
+  
+  best_k = c()
+  worst_k = c()
+  
+  best_ba = c()
+  worst_ba = c()
+  
+  for (i in 1:length(data)){
+    da = data[[i]][[1]] 
+    colnames(da) = gsub("_"," ",colnames(da))%>%  str_to_title()
+    dk = data[[i]][[3]] %>% mutate_all(mean,na.rm = TRUE) %>% dplyr::slice(1)
+    colnames(dk) = gsub("_"," ",colnames(dk))%>%  str_to_title()
+    dba = data[[i]][[4]] %>% mutate_all(mean,na.rm = TRUE) %>% dplyr::slice(1)
+    colnames(dba) = gsub("_"," ",colnames(dba))%>%  str_to_title()
+    
+    best_a[i] = da %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% t() %>% colnames()
+    worst_a[i] = da %>% t() %>% as.data.frame() %>% filter(V1 == min(V1)) %>% t() %>% colnames()
+    
+    
+    bk = dk %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% t() %>% colnames()
+    wk = dk %>% t() %>% as.data.frame() %>% filter(V1 == min(V1)) %>% t() %>% colnames()
+    
+    if (is.null(bk)){
+      best_k[i]=dk %>% t() %>% as.data.frame() %>% filter(!is.na(V1)) %>% filter(V1 == max(V1))  %>% rownames()
+    }else{
+      best_k[i] = bk
+    }
+    
+    if ((is.null(wk))){
+     worst_k[i]= dk %>% t() %>% as.data.frame() %>% filter(is.na(V1)) %>% rownames()
+    }else{
+      worst_k[i] = wk
+    }
+    
+    best_ba[i] = dba %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% t() %>% colnames()
+    worst_ba[i] = dba %>% t() %>% as.data.frame() %>% filter(V1 == min(V1)) %>% t() %>% colnames()
+    
+    
+    da$type = names[i]
+    da$metric = paste("Accuracy",i) 
+    
+    dk$type = names[i]
+    dk$metric = paste("Kappa",i)
+    
+    dk$type = names[i]
+    dk$metric = paste("Kappa",i)
+    
+    dba$type = names[i]
+    dba$metric = paste("Balanced Accuracy",i) 
+    
+    datas = rbind(datas, da, dk, dba)
+  }
+  
+  colnames(datas) = gsub("_"," ",colnames(datas))%>%  str_to_title()
+  
+  base = datas %>%group_by(Type) %>% gt(groupname_col = "Type", rowname_col = "Metric") %>%   
+    tab_style(
+      style = list(cell_text(weight = "bold"), cell_fill("lightcyan")),
+      locations = cells_column_labels(columns = vars("Step Log","Full Log","Rf","Knn","Xgb" ))
+  )
+  
+  for (i in 1:length(data)){
+    base = base %>% 
+    tab_style(
+      style = list(
+        cell_fill(color = "green"),
+        cell_text(weight = "bold")
+        ),
+      locations = cells_body( columns = best_a[i], rows = Metric == paste("Accuracy",i) )
+    ) %>%
+    tab_style(
+      style = list(
+        cell_fill(color = "red"),
+        cell_text(weight = "bold")
+        ),
+      locations =cells_body(columns = worst_a[i], rows = Metric == paste("Accuracy",i) )
+    ) %>% 
+    tab_style(
+      style = list(
+        cell_fill(color = "green"),
+        cell_text(weight = "bold")
+        ),
+      locations =cells_body(columns = best_k[i], rows = Metric == paste("Kappa",i) )
+    ) %>% 
+    tab_style(
+      style = list(
+        cell_fill(color = "red"),
+        cell_text(weight = "bold")
+        ),
+      locations =cells_body(columns = worst_k[i], rows = Metric == paste("Kappa",i) )
+    )%>% 
+    tab_style(
+      style = list(
+        cell_fill(color = "green"),
+        cell_text(weight = "bold")
+        ),
+      locations =cells_body(columns = best_ba[i], rows = Metric == paste("Balanced Accuracy",i) )
+    ) %>% 
+    tab_style(
+      style = list(
+        cell_fill(color = "red"),
+        cell_text(weight = "bold")
+        ),
+      locations =cells_body(columns = worst_ba[i], rows = Metric == paste("Balanced Accuracy",i) )
+    )
+      
+  }
+  base
+}
+```
+
+```{r}
+gt_best_in_data  = function(model, ns){
+  
+  model_best = data.frame()
+  
+  for (i in 1:length(model)){
+     bam = model[[i]][[1]] %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% rownames()
+     bkm = model[[i]][[3]] %>% mutate_all(mean, na.rm = TRUE) %>%dplyr::slice(1) %>%  t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% rownames()
+     bbam = model[[i]][[4]] %>% mutate_all(mean, na.rm = TRUE) %>%dplyr::slice(1) %>% t() %>% as.data.frame() %>% filter(V1 == max(V1)) %>% rownames() 
+     
+     best_models = cbind(Accuracy = model[[i]][[1]][bam] %>% pull(), Kappa = model[[i]][[3]] %>% mutate_all(mean, na.rm = TRUE) %>%dplyr::slice(1) %>% pull(bkm), Balanced_Accuracy = model[[i]][[4]] %>% mutate_all(mean, na.rm = TRUE) %>%dplyr::slice(1) %>% pull(bbam)) %>% t() %>% as.data.frame()
+     best_models$type = c("Accuracy", "Kappa", "Balanced Accuracy")
+     best_models$dataset  = ns[i]
+     best_models$model = gsub("_"," ",c(bam, bkm,bbam)) %>% str_to_title()
+    
+     model_best = rbind(model_best,best_models)
+  }
+    model_best = model_best %>% rename(Score = V1)
+    colnames(model_best) = colnames(model_best) %>% str_to_title()
+    
+    ba = model_best %>% group_by(Type) %>% summarise(max(Score)) %>% filter(Type == "Accuracy") %>% pull(`max(Score)`)
+    ba_m = model_best %>% filter(Score == ba)
+    bk = model_best %>% group_by(Type) %>% summarise(max(Score)) %>% filter(Type == "Kappa") %>% pull(`max(Score)`)
+    bk_m = model_best %>% filter(Score == bk)
+    bbm = model_best %>% group_by(Type) %>% summarise(max(Score)) %>% filter(Type == "Balanced Accuracy") %>% pull(`max(Score)`)
+    bbm_m = model_best %>% filter(Score == bbm)
+    
+    wa = model_best %>% group_by(Type) %>% summarise(min(Score)) %>% filter(Type == "Accuracy") %>% pull(`min(Score)`)
+    wa_m = model_best %>% filter(Score == wa)
+    wk = model_best %>% group_by(Type) %>% summarise(min(Score)) %>% filter(Type == "Kappa") %>% pull(`min(Score)`)
+    wk_m = model_best %>% filter(Score == wk)
+    wbm = model_best %>% group_by(Type) %>% summarise(min(Score)) %>% filter(Type == "Balanced Accuracy") %>% pull(`min(Score)`)
+    wbm_m = model_best %>% filter(Score == wbm)
+    
+    g1 = model_best %>% select(Dataset, Type, Score, Model) %>% dplyr::group_by(Type) %>%  gt() %>%   
+    tab_style(
+      style = list(cell_text(weight = "bold"), cell_fill("lightcyan")),
+      locations = list(cells_column_labels(columns =  c("Dataset", "Score", "Model")))
+    ) %>% 
+      tab_style(style = list(cell_text(weight = "bold")),
+        locations = cells_row_groups(c("Accuracy","Kappa", "Balanced Accuracy")
+      )
+      )
+    
+      
+    g1 = g1 %>% tab_style(
+      style = list(
+        cell_fill(color = "green"),
+        cell_text(weight = "bold")
+        ),locations =cells_body(rows = Score == ba_m[1] %>% pull())
+      ) %>% tab_style(
+      style = list(
+        cell_fill(color = "green"),
+        cell_text(weight = "bold")
+        ),locations =cells_body(rows = Score == bk_m[1] %>% pull() )
+      )%>% tab_style(
+      style = list(
+        cell_fill(color = "green"),
+        cell_text(weight = "bold")
+        ),locations =cells_body(rows = Score == bbm_m[1] %>% pull())
+    ) 
+    
+    g1 %>% tab_style(
+      style = list(
+        cell_fill(color = "red"),
+        cell_text(weight = "bold")
+        ),locations =cells_body(rows = Score == wa_m[1] %>% pull())
+      ) %>% tab_style(
+      style = list(
+        cell_fill(color = "red"),
+        cell_text(weight = "bold")
+        ),locations =cells_body(rows = Score == wk_m[1] %>% pull() )
+      )%>% tab_style(
+      style = list(
+        cell_fill(color = "red"),
+        cell_text(weight = "bold")
+        ),locations =cells_body(rows = Score == wbm_m[1] %>% pull())
+    ) 
+      
+}
+```
+
+### Modified interactive heatmap function
+
+```{r}
+
+signifPlot_altered <- function(results,
+                               fdr = FALSE,
+                               breaks = c(-5, 5, 0.5),
+                               palette = "Spectral",
+                               marksToPlot = NULL) {
+    
+    pVal <- results$p.value[,2]
+    marks <- unique(results$comparisons$from)
+    
+    if (is.null(marksToPlot)) marksToPlot <- marks
+    
+    if (min(pVal, na.rm = TRUE) == 0) {
+        pVal[pVal == 0] <-
+            pVal[pVal == 0] + 10 ^ floor(log10(min(pVal[pVal > 0], na.rm=TRUE)))
+    }
+    
+    if (fdr) {
+        pVal <- p.adjust(pVal, method = "fdr")
+    }
+    
+    isGreater <- results$coefficient[,2] > 0
+    
+    
+    pVal <- log10(pVal)
+    
+    isGreater = isGreater[!is.na(isGreater)]
+    pVal[isGreater] <- abs(pVal[isGreater] )
+    
+    pVal <- matrix(pVal, nrow = length(marks))
+    colnames(pVal) <- marks
+    rownames(pVal) <- marks
+    
+    
+    breaks <- seq(from = breaks[1], to = breaks[2], by = breaks[3])
+    
+    x = pVal[marksToPlot, marksToPlot] %>%as.data.frame() %>%  rownames_to_column() %>%
+        gather(colname, value, -rowname)  %>% rename(Scale = value, cluster1 = colname, cluster2 = rowname)
+    g1 = ggplot(x, aes(x = cluster1, y = cluster2, fill = Scale)) +
+              geom_tile()+ scale_fill_distiller(palette = "Spectral") + labs(x = "", y = "") +
+                     ggtitle("Spatial Correlation Heatmap") +
+                         theme(axis.text.x = element_text(angle = 270,size=7),
+                               axis.text.y = element_text(size=7))
+    g1 %>% ggplotly()
+}
+
+```
+
+
+# Preprocessing
+
+The single cell data only has a relatively small subset of all METABRIC patients. Thus, I will subset all the other datasets as well to only contain the METABRIC patients who are also in the single cell dataset. This reduces the sample size (from approximately 1900 to 355 after data cleaning) we have to train and test our models for these other datasets. However, this choice was made to allow for a controlled comparison between each model we produce such that it is trained and tested on the same set of patients. This enables us to the reduce the impact of individual variability on the performance of the model and thus which performs the best given the same set of patients.
+
+```{r}
+clinical_data = load("saved_rdata/130510_illu_phenoData.Rdata")
+clinical_data = illu.pData %>% mutate(sample_id = gsub(".","-", sample_id,fixed = TRUE))
+
+sc_data = read_csv("saved_rdata/sc_data.csv")
+```
+
+
+
+## Clinical Data
+The clinical data contains information related to the age, subtype of cancer, histology, treatment a patient has received as well as other variables. 
+
+There are 51 patients without a clear indication as to whether they survived or didn't (missing values as to their outcome). Thus, these patients will be excluded from the analysis.
+```{r}
+clinical_data %>% filter(sample_id %in% (sc_data$metabricId %>% unique())) %>% select(-pgr.status, -time, -dataset) %>% select(event) %>% is.na() %>% sum()
+```
+
+```{r}
+clinical_data_processed = clinical_data %>% filter(sample_id %in% (sc_data$metabricId %>% unique())) %>% select(-pgr.status, -time, -dataset) %>% tidyr::drop_na(event)
+```
+
+There are some columns with a few missing values. For the purposes of minimising the amount of patients dropped, I will not use these columns in building our model.
+```{r, fig.cap="Figure 1: Missing values visual in the clinical dataset"}
+clinical_data_processed %>% naniar::vis_miss()
+
+clinical_data_processed = clinical_data_processed %>% select(-er.status,-grade, -stage, -node.status)
+```
+
+
+
+
+## IMC/Single-Cell Data 
+
+The Image Mass Cytometry (IMC) data contains information on images of cores of breast cancer tissue with single cells identified on this tissue and labelled according 1 of 24 cell types. The location of each cell on a core was also marked with an x and y coordinate.  Before feeding this dataset into my models, I transformed it into 2 different versions. The first counted what proportion of each cell type was in a patient’s breast cancer tissue core. The 2nd quantified the level of spatial pairwise interaction between every combination of two cell types in each patient using the spicyR package. 
+
+### SC - Proportions of cell types
+```{r}
+sc_props = sc_data %>% group_by(metabricId, core_id, ImageNumber,description) %>% summarise(n = n()) %>% mutate(freq = n / sum(n)) %>% ungroup() %>%  group_by(metabricId, description, core_id) %>% summarise(avg = mean(freq))
+
+sc_props_sliced = sc_props %>% group_by(metabricId, description) %>% dplyr::slice(1) %>% ungroup() %>%  select(-core_id) %>% spread(description, avg) %>% mutate_all(funs(ifelse(is.na(.), 0, .)))  %>% clean_names() %>% rename(sample_id = metabric_id)
+
+sc_proportions_processed = inner_join(sc_props_sliced, clinical_data) %>% select(sc_props_sliced %>% colnames(), event) %>% na.omit() 
+```
+
+
+### SC - Spatial Interactions Between 2 types of cells
+
+Below is a glimpse of the output from the spicyR package.
+```{r}
+sc_data_copy = sc_data
+colnames(sc_data_copy)[6:44] = paste0("Intensity_Mean_",colnames(sc_data_copy)[6:44])
+sc_data_copy = sc_data_copy %>% dplyr:: rename(x = Location_Center_X, y = Location_Center_Y, cellType = pg_cluster, imageID = ImageNumber) %>% mutate(cellType = cellType) %>% as.data.frame()
+
+
+pheno = sc_data_copy %>% rename(sample_id = metabricId) %>% select(sample_id, imageID) %>% unique() %>% merge(y = clinical_data, by = "sample_id", all.x = TRUE) %>% select(sample_id, imageID, event) %>% as.data.frame() %>% unique() %>% rename(subject = sample_id, condition = event)
+
+
+
+cellExp = SegmentedCells(sc_data_copy, 
+                         cellTypeString = 'cellType', 
+                          intensityString = 'Intensity_Mean_')
+
+
+cellType(cellExp) <- sc_data_copy$cellType
+
+
+
+imagePheno(cellExp) <- pheno
+
+
+cellSum <- cellSummary(cellExp)
+head(cellSum)
+```
+
+
+```{r}
+# spicyTest <- spicy(cellExp, subject = "subject", condition = "condition")
+
+#save(spicyTest,file = "saved_rdata/spicyTest.Rdata")
+
+load("saved_rdata/spicyTest.Rdata")
+
+associations = data.frame()
+for (i in 1:length(spicyTest$pairwiseAssoc)){
+  associations = spicyTest$pairwiseAssoc[i] %>% as.data.frame() %>% t() %>% rbind(associations)
+  
+}
+colnames(associations) = pheno$imageID
+associations = associations %>% t() %>% as.data.frame()
+colnames(associations) = gsub("X", "", colnames(associations))
+
+sc_spatial_interactions = associations %>% mutate(imageID = associations %>% rownames() %>% as.numeric()) %>%  inner_join(pheno) %>% tidyr::drop_na(condition) %>% 
+  mutate_all(funs(ifelse(is.na(.), 0, .))) %>% rename(sample_id = subject,event = condition) %>%group_by(sample_id) %>% dplyr::slice(1) %>% ungroup() %>% select(-imageID)
+```
+
+
+Spatial Interactions between cell types were calculated and p-value histograms of these interactions between clusters were plotted . 
+```{r,fig.cap="Figure 2: Unjusted p-value histogram of interactions between clusters. "}
+topPairs(spicyTest, n = 3025) %>% ggplot(aes(x = p.value)) + geom_histogram()+ theme_minimal()
+```
+
+Adjusted p-value histogram of interactions between clusters to correct for multiple testing. There are no significant interactions at a significance level of $\alpha = 0.05$. This suggests that looking at spatial associations between cell types may be ineffective in predicting the survival outcome of patients. However, we will still proceed with fitting a model using this spatial interactions data.
+```{r,fig.cap="Figure 3: Bonferroni adjusted p-value histogram of interactions between clusters."}
+topPairs(spicyTest, n = 3025) %>% ggplot(aes(x = adj.pvalue)) + geom_histogram()+ theme_minimal()
+```
+
+
+From the correlation plot, there don't seem to be many strong interaction associations in either the positive or negative direction.
+```{r, fig.cap="Figure 4: Correlation plot of the level of interactions between clusters."}
+# signifPlot(spicyTest, 
+#            breaks=c(-3, 3, 0.5)) 
+
+spicyTest %>% signifPlot_altered()
+    
+```
+
+
+## Gene Expression Data
+
+The Gene Expression data measured the expression of 35000 genes for each patient. The survival status for each patient was added by matching patient id's to the clinical dataset and extracting this variable. 
+```{r}
+load("saved_rdata/130510_illu_expr_matrix.Rdata")
+
+ge_data= illu.data %>% as.data.frame()%>%  mutate(sample_id = gsub(".","-",rownames(illu.data),fixed = TRUE))  %>% filter(sample_id %in% (sc_data$metabricId %>% unique()))
+ge_data_processed = inner_join(ge_data, clinical_data) %>% select(ge_data %>% colnames, event) %>% tidyr::drop_na(event)
+```
+
+
+# Model Performance using K-fold CV
+
+## Class Imbalance
+
+In the dataset used train and test models there is an imbalance in the patient outcome in breast cancer patients. With there being many more patients that died relative to those who survived. Thus, accuracy may not be an appropriate metric in measuring the performance of a model. Instead using a Kappa score or Balanced accuracy metric may be more suitable. 
+
+## Metrics
+
+### Kappa
+A kappa score/statistic measures whether the classifier built performs better than a classifier that predicts an outcome based on the frequency of that class. A kappa value < 0 indicates no agreement , 0–0.20 as slight, 0.21–0.40 as fair, 0.41–0.60 as moderate, 0.61–0.80 as substantial, and 0.81–1 as almost perfect agreement (McHugh, 2012).
+
+### Balanced Accuracy
+Balanced accuracy is calculated by taking the average of the proportion of correct predictions made for each class separately. Thus, unlike normal accuracy, the imbalanced class can have a much more substantial impact on the metric and will be lower if the model is performing poorly on the imbalanced class. 
+
+## Summary
+The models built on the clinical data had the best performance in terms of accuracy, balanced accuracy and kappa scores.
+
+In all the models, accuracy and balanced accuracy are of a relatively disparate magnitude. This indicates that the model is over-fitting to the proportions of classes in the training data (i.e. predicts that most patients don't survive a majority of the time due to this being the most frequent class). 
+
+In general the stepwise logistic models have the best accuracy across datatypes, while the random forest performs the worst. Depending on the dataset, the models with best kappa and balanced accuracy scores are the stepwise logistic, logistic and random forest models.
+
+## Clinical Data
+
+Within the models built on the clinical data, the one created through stepwise feature selection on a logistic model had the best average accuracy score of 0.79 and second best kappa and balanced accuracy score of 0.23 and 0.59 respectively.
+
+This kappa score indicates that there is a fair amount of agreement between our model predictions and the actual outcome when accounting for the imbalance of survivors to non-survivors. Although there is a fair amount of agreement, this score likely means that the model is to some extent still predicting classes according to their frequency. That is, the model forecasts that a majority of patients don't survive as they are more prominent in the training data and thus are being given a higher weight when predictions are being made.
+
+The stepwise model also seems to have a similar level of variability to the other models for both accuracy and kappa. However, from the boxplots,  the variability for the kappa scores seem to be higher than for accuracy in the clinical models.
+
+```{r}
+# clinical_results = model_cv_feature(clinical_data_processed, k=10, ncv = 5, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020)
+#  
+# save(clinical_results,file = "saved_rdata/clinical_results.Rdata")
+```
+
+```{r}
+load("saved_rdata/clinical_results.Rdata")
+```
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r, fig.width=10, fig.cap="Figure 5: Boxplots of K-fold CV on clinical models"}
+(ggplot(bind_rows(clinical_results[2] %>% as.data.frame() %>% gather() %>% mutate(df="Accuracy"), clinical_results[3] %>% as.data.frame() %>% gather() %>%   mutate(df="Kappa"), clinical_results[4] %>% as.data.frame() %>% gather() %>%   mutate(df="Balanced Accuracy") ),
+       aes(x = key,y = value,fill = key)) +
+  geom_boxplot() +
+  facet_wrap(~ df, scales="free") + labs(x = "", y = "")) %>% ggplotly()
+
+```
+</div>
+
+
+```{r, fig.cap="Table 1: Average performance from K-fold CV on clinical models"}
+gt_create(clinical_results) %>% tab_source_note("Table 1: Average performance from K-fold CV on clinical models")
+```
+
+
+
+## IMC/Single-Cell Data 
+
+### SC - Proportions of cell types
+The stepwise logistic model has the best accuracy for this dataset with a score of 0.76. This score is comparable to the accuracy from the worst performing model in clinical dataset (random forest model). Furthermore, the best kappa and balanced accuracy scores from the random forest model built of single-cell (sc) proportions are worse than scores outputted from any of the models built from the clinical dataset. Thus, although a 0.1 kappa score indicates that there is a slight agreement between our model and predictions when accounting for class imbalances, this isn't much better than using a model predicting outcomes according to class frequencies.
+
+```{r}
+# sc_proportions_processed_results = model_cv_feature(sc_proportions_processed, k=10, ncv = 5, top = 10,fs = FALSE, categorical_exist = FALSE,  seed =2020)
+# 
+# save(sc_proportions_processed_results,file = "saved_rdata/sc_proportions_processed_results.Rdata")
+```
+
+```{r}
+load("saved_rdata/sc_proportions_processed_results.Rdata")
+```
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap="Figure 6: Boxplots of K-fold CV on single cell proportion models"}
+(ggplot(bind_rows(sc_proportions_processed_results[2] %>% as.data.frame() %>% gather() %>% mutate(df="Accuracy"), sc_proportions_processed_results[3] %>% as.data.frame() %>% gather() %>%   mutate(df="Kappa"),  sc_proportions_processed_results[4] %>% as.data.frame() %>% gather() %>%   mutate(df="Balanced Accuracy")),
+       aes(x = key,y = value,fill = key)) +
+  geom_boxplot() +
+  facet_wrap(~ df, scales="free")+ labs(x = "", y = "")) %>% ggplotly()
+```
+</div>
+
+
+```{r, fig.cap="Table 2: Average performance from K-fold CV on single cell proportion models"}
+gt_create(sc_proportions_processed_results) %>% tab_source_note("Table 2: Average performance from K-fold CV on single cell proportion models")
+```
+
+
+### SC - Spatial Interactions Between 2 types of cells
+The SC - Spatial Interactions data had many interactions which would be computationally difficult to build models on. Thus, I performed feature selection using the limma package to statistically choose the top 20 differentially expressed interactions between survivors and non-survivors. This process was incorporated into the CV loop to prevent data leakage from the testing to training folds and give a more accurate representation of how our models would perform on unseen data.
+
+The models built on the interactions between single cells performs even worse than the sc proportions models for all metrics. A negative kappa score indicates that the model is performing worse than a model that just predicts survival outcome according to the frequency these classes appear. 
+
+```{r}
+# sc_spatial_interactions_results = model_cv_feature(sc_spatial_interactions, k=10, ncv = 5, top = 20,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# 
+# save(sc_spatial_interactions_results,file = "saved_rdata/sc_spatial_interactions_results.Rdata")
+```
+
+```{r}
+load("saved_rdata/sc_spatial_interactions_results.Rdata")
+```
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap="Figure 7: Boxplots of K-fold CV on single cell spatial interaction models."}
+(ggplot(bind_rows(sc_spatial_interactions_results[2] %>% as.data.frame() %>% gather() %>% mutate(df="Accuracy"), sc_spatial_interactions_results[3] %>% as.data.frame() %>% gather() %>%   mutate(df="Kappa"), sc_spatial_interactions_results[4] %>% as.data.frame() %>% gather() %>%   mutate(df="Balanced Accuracy") ),
+       aes(x = key,y = value,fill = key)) +
+  geom_boxplot() +
+  facet_wrap(~ df, scales="free")+ labs(x = "", y = "")) %>% ggplotly()
+```
+</div>
+
+
+```{r,fig.cap="Table 3: Average performance from K-fold CV on single cell spatial interaction models"}
+gt_create(sc_spatial_interactions_results) %>% tab_source_note("Table 3: Average performance from K-fold CV on single cell spatial interaction models")
+```
+
+
+## Gene Expression Data
+
+The Gene Expression data included 35000 genes for each patient which would be computationally difficult to build models on. Thus, I performed feature selection using the limma package to statistically choose the top 10 differentially expressed genes between survivors and non-survivors. This process was incorporated into the CV loop to prevent data leakage from the testing to training folds and give a more accurate representation of how our models would perform on unseen data.
+
+The stepwise model built on the gene expression data has an almost identical performance to the models built on sc proportions. However, the accuracy, kappa and balanced accuracy scores are slightly lower.
+
+```{r}
+# ge_results = model_cv_feature(ge_data_processed, k=10, ncv = 5, top = 10,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# 
+# save(ge_results,file = "saved_rdata/ge_results.Rdata")
+```
+
+```{r}
+load("saved_rdata/ge_results.Rdata")
+```
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap="Figure 8: Boxplots of K-fold CV on gene expression models"}
+(ggplot(bind_rows(ge_results[2] %>% as.data.frame() %>% gather() %>% mutate(df="Accuracy"), ge_results[3] %>% as.data.frame() %>% gather() %>%   mutate(df="Kappa"), ge_results[4] %>% as.data.frame() %>% gather() %>%   mutate(df="Balanced Accuracy")),
+       aes(x = key,y = value,fill = key)) +
+  geom_boxplot() +
+  facet_wrap(~ df, scales="free")+ labs(x = "", y = "")) %>% ggplotly()
+```
+</div>
+
+```{r,fig.cap="Table 4: Average performance from K-fold CV on gene expression models"}
+gt_create(ge_results) %>% tab_source_note("Table 4: Average performance from K-fold CV on gene expression models")
+```
+
+
+
+# Investigating Model Performance on Individual Subtypes 
+
+### Clinical Model 
+
+The best performing clinical models have a moderately good accuracy and kappa score (this metric investigates performance when there is a class imbalance i.e. significantly more patients who die than survive) when predicting patients who have been diagnosed with the Luminal A and HER2 cancer sub-type. This suggests that these models are performing fairly well when accounting for the class imbalance.
+
+The XGB model predicting survival outcome in patients diagnosed with a Normal subtype of breast cancer have a moderately high accuracy. However, the kappa score is relatively low compared to the models built on the Lumincal A and HER2 subtypes. Thus, this kappa score indicates that there is slight agreement between the model prediction and outcome when accounting for the class imbalance.
+
+Models predicting the outcome in patients with an Luminal B and Basal outcome have a moderate accuracy but relatively poor kappa score. This indicates that these two models aren't performing well when accounting for the class imbalance.
+
+
+```{r}
+clinical_subtypes = clinical_data %>% filter(sample_id %in% (sc_data$metabricId %>% unique())) %>% select(-pgr.status, -time, -dataset) %>% tidyr::drop_na(event, subtype) %>% select(-er.status, -grade, -stage, -node.status)
+
+
+
+lum_a = clinical_subtypes %>% filter(subtype =="Luminal A" ) %>% select(-subtype)
+lum_b = clinical_subtypes %>% filter(subtype == "Luminal B") %>% select(-subtype)
+normal= clinical_subtypes %>% filter(subtype == "Normal") %>% select(-subtype)
+basal  = clinical_subtypes %>% filter(subtype == "Basal") %>% select(-subtype)
+her2 = clinical_subtypes %>% filter(subtype == "HER2") %>% select(-subtype)
+
+cl_st = list(lum_a, lum_b, normal, basal, her2)
+ 
+# lum_a_results = model_cv_feature(lum_a, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020)
+# lum_b_results = model_cv_feature(lum_b, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020)
+# normal_results = model_cv_feature(normal, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020)
+# basal_results = model_cv_feature(basal, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020)
+# her2_results = model_cv_feature(her2, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020)
+# 
+# clinical_subtype_results = list(lum_a_results,her2_results,normal_results,lum_b_results,basal_results)
+# 
+# save(clinical_subtype_results, file = "saved_rdata/clinical_subtype_results.Rdata")
+
+```
+
+
+
+```{r}
+load("saved_rdata/clinical_subtype_results.Rdata")
+
+subtype_names = c("Luminal A", "HER2","Normal", "Luminal B","Basal" )
+gt_create_multi(clinical_subtype_results,subtype_names)%>% tab_source_note("Table 5: Average performance from K-fold CV on clinical models by subtype")
+```
+
+
+## Investigating if models built on other datasets can predict the Normal, Luminal B and Basal Subtypes have better performance:
+
+### Gene Expression Data
+```{r}
+# ge_data_subtypes = inner_join(ge_data, clinical_data) %>% select(ge_data %>% colnames, event, subtype) %>% tidyr::drop_na(event)
+# 
+# 
+# lum_a = ge_data_subtypes %>% filter(subtype =="Luminal A" ) %>% select(-subtype)
+# lum_b = ge_data_subtypes %>% filter(subtype == "Luminal B") %>% select(-subtype)
+# normal= ge_data_subtypes %>% filter(subtype == "Normal") %>% select(-subtype)
+# basal  = ge_data_subtypes %>% filter(subtype == "Basal") %>% select(-subtype)
+# her2 = ge_data_subtypes %>% filter(subtype == "HER2") %>% select(-subtype)
+# 
+# lum_a_results = model_cv_feature(lum_a, k=10, ncv = 3, top = 10,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# lum_b_results = model_cv_feature(lum_b, k=10, ncv = 3, top = 10,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# normal_results = model_cv_feature(normal,  k=10, ncv = 3, top = 10,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# basal_results = model_cv_feature(basal, k=10, ncv = 3, top = 10,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# her2_results = model_cv_feature(her2,  k=10, ncv = 3, top = 10,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# 
+# 
+# ge_subtype_results = list(lum_a_results,her2_results,normal_results,lum_b_results,basal_results)
+# 
+# save(ge_subtype_results, file = "saved_rdata/ge_subtype_results.Rdata")
+
+
+```
+
+
+Models built on gene expression data seem to perform significantly worse relative to the models built on clinical model with respect to all breast cancer subtypes in terms of both accuracy and kappa.
+```{r}
+load("saved_rdata/ge_subtype_results.Rdata")
+gt_create_multi(ge_subtype_results,subtype_names)%>% tab_source_note("Table 6: Average performance from K-fold CV on gene expression models by subtype")
+```
+
+
+### Single Cell Data
+
+#### SC Proportions
+
+Models using SC proportions data don't fair any better with similar or even worse performance than the models built on gene expression data.
+```{r}
+# sc_props_subtypes = inner_join(sc_props_sliced, clinical_data) %>% select(sc_props_sliced %>% colnames(), subtype,event) %>% na.omit()
+# 
+# 
+# lum_a = sc_props_subtypes %>% filter(subtype =="Luminal A" ) %>% select(-subtype)
+# lum_b = sc_props_subtypes %>% filter(subtype == "Luminal B") %>% select(-subtype)
+# normal= sc_props_subtypes%>% filter(subtype == "Normal") %>% select(-subtype)
+# basal  = sc_props_subtypes %>% filter(subtype == "Basal") %>% select(-subtype)
+# her2 = sc_props_subtypes %>% filter(subtype == "HER2") %>% select(-subtype)
+# 
+# 
+# lum_a_results = model_cv_feature(lum_a, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = FALSE,  seed =2020)
+# lum_b_results = model_cv_feature(lum_b, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = FALSE,  seed =2020)
+# normal_results = model_cv_feature(normal, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = FALSE,  seed =2020)
+# basal_results = model_cv_feature(basal, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = FALSE,  seed =2020)
+# her2_results = model_cv_feature(her2, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = FALSE,  seed =2020)
+# 
+# 
+# 
+# sc_props_subtypes_results = list(lum_a_results,her2_results,normal_results,lum_b_results,basal_results)
+# 
+# save(sc_props_subtypes_results, file = "saved_rdata/sc_props_subtypes_results.Rdata")
+
+```
+
+```{r}
+load("saved_rdata/sc_props_subtypes_results.Rdata")
+gt_create_multi(sc_props_subtypes_results, subtype_names )%>% tab_source_note("Table 7: Average performance from K-fold CV on single cell proportion models by subtype")
+```
+
+### Single-Cell Spatial Interactions
+Models using SC spatial interactions have the worst performance for all subtypes when compared to the models built on other data.
+```{r}
+# sc_interactions_subtypes  = sc_spatial_interactions %>% inner_join(clinical_data) %>% select(subtype,(sc_spatial_interactions %>% colnames()))
+# 
+# lum_a = sc_interactions_subtypes %>% filter(subtype =="Luminal A" ) %>% select(-subtype)
+# lum_b = sc_interactions_subtypes %>% filter(subtype == "Luminal B") %>% select(-subtype)
+# normal= sc_interactions_subtypes %>% filter(subtype == "Normal") %>% select(-subtype)
+# basal  = sc_interactions_subtypes %>% filter(subtype == "Basal") %>% select(-subtype)
+# her2 = sc_interactions_subtypes %>% filter(subtype == "HER2") %>% select(-subtype)
+# 
+# 
+# lum_a_results = model_cv_feature(lum_a, k=10, ncv = 3, top = 20,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# lum_b_results = model_cv_feature(lum_b, k=10, ncv = 3, top = 20,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# normal_results = model_cv_feature(normal, k=10, ncv = 3, top = 20,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# basal_results = model_cv_feature(basal, k=10, ncv = 3, top = 20,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# her2_results = model_cv_feature(her2, k=10, ncv = 4, top = 20,fs = TRUE, categorical_exist = FALSE,  seed =2020)
+# 
+# 
+# 
+# sc_interactions_subtypes_results = list(lum_a_results,her2_results,normal_results,lum_b_results,basal_results)
+# 
+# save(sc_interactions_subtypes_results, file = "saved_rdata/sc_interactions_subtypes_results .Rdata")
+```
+
+```{r}
+load("saved_rdata/sc_interactions_subtypes_results .Rdata")
+gt_create_multi(sc_interactions_subtypes_results, subtype_names)%>% tab_source_note("Table 8: Average performance from K-fold CV on single cell spatial interaction models by subtype")
+```
+
+
+# Investigating the Predictive Power of the Clinical Model using Model Stability 
+
+## Summary
+When predicting the survival outcome in patients diagnosed with a partcular subtype of breast cancer, it seems as the clinical model has the most predictive power due to `age` and certain treatment variables consistently retained in the variable inclusion plot when minimising LOSS. The latter implies that some treatments are likely to play a pivotal role in a patients survival as they provide a differentiating factor that improves the models performance. The exception to this is individuals of an Normal (age doesn't seem as crucial) and Basal breast cancer subtype (no variables seem crucial). 
+
+## Variable Inclusion Plots
+
+In the variable inclusion plot the value of the penalty coefficient is varied and we observe whether each parameter is selected in the model that minimises the loss plus penalty in weighted bootstrap samples. This is done to see the effect of slight deviations in our samples in the selection of various parameters. If stable, the probability a parameter is selected should be relatively consistent across penalty coefficients. Additionally, if certain treatments appear over others consistently, this can give a level of indication as to whether certain treatment(s) are a differentiating factor in patient survival prognosis and thus also if the treatment is effective.
+
+## Aggreagte Data
+
+From the variable inclusion plot (VIP), on the aggregate clinical data, there is only one variable that is selected consistently in the best performing models as the penalty term increases on the x-axis. This variable is `age`. Intuitively, age would play a major role in the survival of a patient as individuals are more susceptible to death and less likely to respond to treatments as they age.
+
+It is interesting that no treatment tends to be selected with high probability as the penalty term increases. This, is likely due to different treatments being effective on different subtypes of patients, acting as a confounding variable. Thus, this would suggest that our logistic model's needs to account for the interaction between patient subtypes and the treatment administered. This will implicitly be investigated in the following sections as we investigate model stability on models built from data stratified by subtype.
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10,fig.cap="Figure 9: Variable Inclusion plot on models built on the entire clinical dataset"}
+# bw.glm <- glm(event ~ ., family = binomial, data =clinical_data_processed %>% select(-sample_id))
+# pihat <- fitted(bw.glm)
+# r <- residuals(bw.glm, type = "working")
+# z <- log(pihat / (1 - pihat)) + r
+# v <- pihat * (1 - pihat)
+# nbwt <- clinical_data_processed%>% select(-sample_id, -event) 
+# nbwt$z <- z
+# nbwt$low <- NULL
+# bw.lm <- lm(z ~ ., data = nbwt, weights = v)
+# cl.bw.lm.vis <- vis(bw.lm, B = 150, seed = 1)
+
+# save(cl.bw.lm.vis, file = "saved_rdata/cl.bw.lm.vis.Rdata")
+load("saved_rdata/cl.bw.lm.vis.Rdata")
+
+(plot(cl.bw.lm.vis, which = "vip", interactive = FALSE)) %>% ggplotly()
+```
+</div>
+
+## Looking at Individual Subtypes
+
+### Luminal A
+
+As per the model built on the aggregate data, `age` continues to be an integral to the stability of a model when predicting outcomes in Luminal A breast cancer patients. This highlights that `age` likely plays a major role in the survival off a patient. The treatment CT.HT.RT is also another variable that is selected with a comparable level of probability to `age`. This agrees with what was previously hypothesised.That is, when investigating particular subtypes, certain treatment's are more likely to play a crucial role in differentiating whether a patient survives or not.  Since models predicting the outcome of individuals of this subtype perform relatively well, it seems as though CT.HT.RT should continue to be administered to Luminal A patients as a way of combating their breast cancer. To improve the outreach of this treatment, government and specialists should work closely with each other as a means to lower the cost of providing this treatment and improving accessibility.
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap= "Figure 10: Variable Inclusion plot on models built on the Luminal A subtype clinical dataset"}
+# bw.glm <- glm(event ~ ., family = binomial, data =cl_st[[1]]%>% select(-sample_id))
+# pihat <- fitted(bw.glm)
+# r <- residuals(bw.glm, type = "working")
+# z <- log(pihat / (1 - pihat)) + r
+# v <- pihat * (1 - pihat)
+# nbwt <- cl_st[[1]] %>% select(-sample_id, -event) 
+# nbwt$z <- z
+# nbwt$low <- NULL
+# bw.lm <- lm(z ~ ., data = nbwt, weights = v)
+# luma.bw.lm.vis <- vis(bw.lm, B = 150, seed = 1)
+# 
+# save(luma.bw.lm.vis, file = "saved_rdata/luma.bw.lm.vis.Rdata")
+load("saved_rdata/luma.bw.lm.vis.Rdata")
+
+(plot(luma.bw.lm.vis, which = "vip", interactive = FALSE)) %>% ggplotly()
+
+```
+</div>
+
+### HER2
+
+For HER2 patients, all variables except `RV` and `treatmentRT` are selected with high probability throughout. This suggests that multiple treatments and clinical factors play a major role in determining whether a patient of this subtype survives. However, since being admistered an RT treatment doesn't seem to be a differentiating factor in determining the survival of a patient (as it is rarely included in any of the best performing models that minimise LOSS), this indicates that individuals and breast cancer specialists should avoid this type of treatment for patients with a HER2 subtype of cancer.
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10,fig.cap= "Figure 11: Variable Inclusion plot on models built on the HER2 subtype clinical dataset"}
+# bw.glm <- glm(event ~ ., family = binomial, data =cl_st[[5]]%>% select(-sample_id))
+# pihat <- fitted(bw.glm)
+# r <- residuals(bw.glm, type = "working")
+# z <- log(pihat / (1 - pihat)) + r
+# v <- pihat * (1 - pihat)
+# nbwt <- cl_st[[5]] %>% select(-sample_id, -event)
+# nbwt$z <- z
+# nbwt$low <- NULL
+# bw.lm <- lm(z ~ ., data = nbwt, weights = v)
+# her2.bw.lm.vis <- vis(bw.lm, B = 150, seed = 1)
+# 
+# save(her2.bw.lm.vis, file = "saved_rdata/her2.bw.lm.vis.Rdata")
+load("saved_rdata/her2.bw.lm.vis.Rdata")
+
+(plot(her2.bw.lm.vis, which = "vip", interactive = FALSE)) %>% ggplotly()
+
+```
+</div>
+
+### Normal
+For Normal breast cancer patients, surprisingly `age` doesn't seem to be integral to the stability of a model that predicts the survival outcome in these patients. This is because the probability `age` is selected follows a similar path to the redudant variable (`RV`) which is unrelated to an individuals survival. Instead, being treated with CT.HT.RT and the size of a patients tumour seem to govern the survivial of patients of a normal subtype of cancer. However, these results may need to be taken with caution as there was only a fair agreement (kappa = 0.23) with the clinical model's prediction and actual outcome when accounting for the imbalance of classes when K-fold CV was performed. 
+
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap= "Figure 12: Variable Inclusion plot on models built on the Normal subtype clinical dataset"}
+# bw.glm <- glm(event ~ ., family = binomial, data =cl_st[[3]]%>% select(-sample_id))
+# pihat <- fitted(bw.glm)
+# r <- residuals(bw.glm, type = "working")
+# z <- log(pihat / (1 - pihat)) + r
+# v <- pihat * (1 - pihat)
+# nbwt <- cl_st[[3]] %>% select(-sample_id, -event) 
+# nbwt$z <- z
+# nbwt$low <- NULL
+# bw.lm <- lm(z ~ ., data = nbwt, weights = v)
+# normal.bw.lm.vis <- vis(bw.lm, B = 150, seed = 1)
+# 
+# save(normal.bw.lm.vis, file = "saved_rdata/normal.bw.lm.vis.Rdata")
+load("saved_rdata/normal.bw.lm.vis.Rdata")
+
+(plot(normal.bw.lm.vis, which = "vip", interactive = FALSE)) %>% ggplotly()
+
+```
+</div>
+
+### Luminal B
+
+As per the Luminal A and HER2 subtype, `age` is incorporated in stable models with a relatively high level of probability when compared to other variables throughout the range of penalty values.  `treatment.HT`  seems to be of a similar level of importance until a penalty coefficient of 5, where its probability of being selected then sharply declines. This is in contrast to `age` which only declines slowly. This suggests that the treatment HT may only have a minor role in differentiating whether a Luminal B patient survives. Thus, this indicates that additional research into more effective treatments must be conducted to improve patient outcomes and prognosis of patients of a Luminal B breast cancer subtype (accentuated by models predicting outcomes in these patients only performing "fair" in terms of a kappa statistic).
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap= "Figure 13: Variable Inclusion plot on models built on the Luminal B subtype clinical dataset"}
+# bw.glm <- glm(event ~ ., family = binomial, data =cl_st[[2]]%>% select(-sample_id))
+# pihat <- fitted(bw.glm)
+# r <- residuals(bw.glm, type = "working")
+# z <- log(pihat / (1 - pihat)) + r
+# v <- pihat * (1 - pihat)
+# nbwt <- cl_st[[2]] %>% select(-sample_id, -event) 
+# nbwt$z <- z
+# nbwt$low <- NULL
+# bw.lm <- lm(z ~ ., data = nbwt, weights = v)
+# lumb.bw.lm.vis <- vis(bw.lm, B = 150, seed = 1)
+# 
+# save(lumb.bw.lm.vis, file = "saved_rdata/lumb.bw.lm.vis.Rdata")
+load("saved_rdata/lumb.bw.lm.vis.Rdata")
+
+(plot(lumb.bw.lm.vis, which = "vip", interactive = FALSE)) %>% ggplotly()
+```
+</div>
+
+### Basal
+
+`RV` is a redundant variable generated by the mplot package that is uncorrelated to the patient's survival status. Thus, any values near or below this variable in the variable inclusion plot (VIP) are unlikely to be incorporated into a stable model that is able to predict the patients survival outcome. From the VIP below, we see that all the variables are below `RV` for the Basal subtype. This indicates that all variables are more or less redundant when predicting survival outcome in patients with Basal breast cancer. This is consistent with the results in previous sections, where all models performed poorly with regards to a kappa score when predicting this subtype. This suggests that the treatments used for patients of this subtype don't necessarily differentiate whether they survive or not. Thus, further research needs to be done with relation to the factors that influence a Basal individuals survival and the treatments that prove effective.
+
+<style>
+  .superbigimage{
+      overflow-x:scroll;
+      white-space: nowrap;
+  }
+
+  .superbigimage img{
+     max-width: none;
+  }
+
+
+</style>
+<div class="superbigimage">
+```{r,fig.width=10, fig.cap= "Figure 14: Variable Inclusion plot on models built on the Basal subtype clinical dataset"}
+# bw.glm <- glm(event ~ ., family = binomial, data =cl_st[[4]]%>% select(-sample_id))
+# pihat <- fitted(bw.glm)
+# r <- residuals(bw.glm, type = "working")
+# z <- log(pihat / (1 - pihat)) + r
+# v <- pihat * (1 - pihat)
+# nbwt <- cl_st[[4]] %>% select(-sample_id, -event) 
+# nbwt$z <- z
+# nbwt$low <- NULL
+# bw.lm <- lm(z ~ ., data = nbwt, weights = v)
+# basal.bw.lm.vis <- vis(bw.lm, B = 150, seed = 1)
+# 
+# save(basal.bw.lm.vis, file = "saved_rdata/basal.bw.lm.vis.Rdata")
+load("saved_rdata/basal.bw.lm.vis.Rdata")
+
+(plot(basal.bw.lm.vis, which = "vip", interactive = FALSE)) %>% ggplotly()
+```
+</div>
+
+
+# Addressing the Class Imbalance in the Clinical Model
+
+I restricted my attention to just models built on the clinical dataset as they had the best prospective performance. 
+
+I used weights in all the classification models (with the exception of KNN which does not accept weights) to deal with the class imbalance. These weights increases the algorithms priority in correctly predicting the outcome of the survivors in the dataset (as these individuals are the minority class).   
+
+## Using Weights on the Aggregated Data
+
+The accuracy in the best performing weighted model was (XGB) was lower than the best performing un-weighted model (stepwise logistic) on the aggregated data. However, the kappa and balanced accuracy from the weighted logistic regression model was slightly better than for the un-weighted models.  
+
+Thus, if our main goal is to have a balance between correctly predicting survivors and non-survivors, this weighted model should be used instead on the aggregate clinical data. This will to some extent mitigate the logistic regression models overfitting to the proportion of classes in a dataset.
+
+```{r}
+# w_clinical_results = model_cv_feature(clinical_data_processed, k=10, ncv = 5, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = TRUE)
+# 
+# save(w_clinical_results,file = "saved_rdata/w_clinical_results.Rdata")
+```
+
+
+```{r}
+load("saved_rdata/w_clinical_results.Rdata")
+gt_create(w_clinical_results) %>% tab_source_note("Table 9: K-fold CV clinical model performance with weighted classification models") 
+```
+
+
+## Using Weights in each of the Stratified Subtypes
+
+Using weights in the models built per subtype yielded no improvement to accuracy, balanced accuracy and kappa for any of the subtypes. 
+
+Thus, other techniques such as hyperparameter optimisation may need to be turned to improve model performance. 
+
+```{r}
+# w_lum_a_results = model_cv_feature(lum_a, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = TRUE)
+# w_lum_b_results = model_cv_feature(lum_b, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = TRUE)
+# w_normal_results = model_cv_feature(normal, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = TRUE)
+# w_basal_results = model_cv_feature(basal, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = TRUE)
+# w_her2_results = model_cv_feature(her2, k=10, ncv = 3, top = 10,fs = FALSE, categorical_exist = TRUE,  seed =2020, w = TRUE)
+# 
+# w_clinical_subtype_results = list(w_lum_a_results,w_her2_results,w_normal_results,w_lum_b_results,w_basal_results)
+# 
+#save(w_clinical_subtype_results, file = "saved_rdata/w_clinical_subtype_results.Rdata")
+
+```
+
+```{r}
+load("saved_rdata/w_clinical_subtype_results.Rdata")
+
+subtype_names = c("Luminal A", "HER2","Normal", "Luminal B","Basal" )
+gt_create_multi(w_clinical_subtype_results,subtype_names)%>% tab_source_note("Table 10: Average performance from K-fold CV on with weighted classification models by subtype")
+```
+
+
+
+# Summary of the best models
+
+## Overall
+
+The best performing clinical models have the impressive scores for each metric. While, the models built on single cell spatial interaction data have the worst. Thus, it seems as though using a novel dataset (clinical data) is more effective than IMC data in predicting the survival status of diabetic patients. However, this may be expected, since we found that there were no significant difference in the spatial interaction between cell types across survival statuses. 
+
+```{r}
+model = list(clinical_results, ge_results, sc_proportions_processed_results, sc_spatial_interactions_results)
+ns = c("Clinical", "Gene Expression", "Single-Cell Proportions", "Single-Cell Spatial Interactions")
+overall_summary = gt_best_in_data(model, ns = ns) %>% list()
+overall_summary[[1]] %>% tab_source_note("Table 11: Summary table of the best performing models from each dataset")
+```
+
+
+
+
+# References
+Ali, H., Jackson, H., Zanotelli, V., Danenberg, E., Fischer, J., & Bardwell, H. et al. (2020). Imaging mass cytometry and multiplatform genomics define the phenogenomic landscape of breast cancer. Nature Cancer, 1(2), 163-175. doi: 10.1038/s43018-020-0026-6
+
+C. Sievert. Interactive Web-Based Data Visualization with R, plotly, and shiny. Chapman
+and Hall/CRC Florida, 2020.
+  
+McHugh, M. L. (2012). Interrater reliability: the kappa statistic. Biochemia medica, 22(3), 276-282.
+
+Nicolas Canete and Ellis Patrick (2021). spicyR: Spatial analysis of in situ cytometry
+data. R package version 1.3.2.
+
+Ritchie, M.E., Phipson, B., Wu, D., Hu, Y., Law, C.W., Shi, W., and Smyth, G.K. (2015).
+limma powers differential expression analyses for RNA-sequencing and microarray
+studies. Nucleic Acids Research 43(7), e47.
+
+Tarr G, Müller S, Welsh AH (2018). “mplot: An R Package for Graphical Model Stability and
+Variable Selection Procedures.” _Journal of Statistical Software_, *83*(9), 1-28. doi:
+10.18637/jss.v083.i09 (URL: https://doi.org/10.18637/jss.v083.i09).
+
+Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software,
+4(43), 1686, https://doi.org/10.21105/joss.01686
