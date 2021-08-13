@@ -4,7 +4,7 @@ The aim of this project was to build numerous classification models using single
 
 The best performing model was the logistic model built through stepwise regression. This model had an accuracy of 78% and the lowest level of variablity in k-fold CV relative to the other models. 
 
-Other Key highlights:
+Other highlights:
 -	Utilised ‘spicyR’ to investigate the spatial interaction between cells in breast cancer single cell tissue images 
 -	Used statistical analysis to determine which 35,000 genes were differentially expressed genes in patients that survived and those that didn't
 -	Developed a model that predicted the survival of a particular subtype (Luminal A) of breast cancer patients with 90% accuracy and 0.53 kappa
